@@ -1,6 +1,6 @@
 ==============================================
 Welcome to RedKite Phishing Indicators Checker
-
+==============================================
 
 RedKite is a PowerShell-based tool designed to assist security analysts and administrators in detecting suspicious mailbox configurations that might indicate email phishing attacks in Exchange Online environments. It checks for suspicious inbox rules, external redirects, and recent mailbox changes that could indicate a compromised account.
 

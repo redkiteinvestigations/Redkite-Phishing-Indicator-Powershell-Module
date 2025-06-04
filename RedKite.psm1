@@ -44,7 +44,7 @@ function Test-RequiredModules {
 }
 
 # Run this check before starting the main script
-Test-RequiredModules -Modules @('Microsoft.Graph', 'ExchangeOnlineManagement')
+Test-RequiredModules -Modules @('Microsoft.Graph.Users', 'ExchangeOnlineManagement')
 
 function Start-Redkite {
 

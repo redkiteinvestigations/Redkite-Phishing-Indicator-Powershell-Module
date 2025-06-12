@@ -1,6 +1,7 @@
-==============================================
-Welcome to RedKite Phishing Indicators Checker
-==============================================
+
+=
+ Welcome to RedKite Phishing Indicators Checker =
+=
 
 RedKite is a PowerShell-based tool designed to assist security analysts and administrators in detecting suspicious mailbox configurations that might indicate email phishing attacks in Exchange Online environments. It checks for suspicious inbox rules, external redirects, and recent mailbox changes that could indicate a compromised account.
 
@@ -16,6 +17,7 @@ Forward emails externally
 External Forwards: Identifies rules that forward mail outside of accepted domains.
 
 Recent Mailbox Changes: Highlights recent changes to mailbox configurations (optional step).
+This checks 'UpdateInboxRules' and 'Set-Mailbox' using Search-MailboxAuditLog cmdlet
 
 Logging: Saves logs in timestamped log files in the specified directory.
 
@@ -28,11 +30,16 @@ PowerShell 5.1 or later
 
 Admin privileges in Exchange Online and Microsoft Graph
 
+Mailbox audit logging must be enabled for Recent Mailbox Changes to return results.
+Since January 2019, mailbox auditing is on by default for user mailboxes, but:
+You should verify that auditing is not disabled for specific mailboxes.
+
 Installed modules:
 
 Microsoft.Graph
 
 ExchangeOnlineManagement
+
 
 ===========================
 🚀 Usage

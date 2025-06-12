@@ -18,33 +18,63 @@ function Test-RequiredModules {
 
     foreach ($module in $Modules) {
         Write-Host "Checking module '$module'..."
-        
-        # Check if the module is installed
+
         $installed = Get-Module -ListAvailable -Name $module
         if (-not $installed) {
             Write-Host "Module '$module' is NOT installed." -ForegroundColor Yellow
-			            Write-Host "Please run 'Install-Module $module -Scope CurrentUser'." -ForegroundColor Yellow
-            # You might want to consider installing it here, or just warn the user.
+
+            # Prompt user for installation
+            $install = Read-Host "Module '$module' is required. Would you like to install it now? (Y/N)"
+            if ($install -match '^[Yy]') {
+                try {
+                    # Check if NuGet provider is available
+                    if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+                        Write-Host "NuGet provider not found. Installing NuGet provider..."
+                        Install-PackageProvider -Name NuGet -Force -Scope CurrentUser
+                    }
+
+                    # Install module
+                    Write-Host "Installing module '$module'..."
+                    Install-Module -Name $module -Scope CurrentUser -Force -AllowClobber
+                    Write-Host "Module '$module' installed successfully." -ForegroundColor Green
+                }
+                catch {
+                    Write-Error "Failed to install module '$module': $($_.Exception.Message)"
+                    return
+                }
+            }
+            else {
+                Write-Host "Please install the module manually using 'Install-Module $module -Scope CurrentUser'." -ForegroundColor Red
+                return
+            }
         }
         else {
             Write-Host "Module '$module' is installed." -ForegroundColor Green
-            # Check if the module is already imported
+
             $imported = Get-Module -Name $module
             if (-not $imported) {
-                    Write-Host "Run 'Import-Module $module' if this is a new powershell session" -ForegroundColor Yellow
+                Write-Host "Importing module '$module'..."
+                Import-Module $module -Force
+                Write-Host "Module '$module' imported successfully." -ForegroundColor Green
             }
             else {
                 Write-Host "Module '$module' is already imported." -ForegroundColor Cyan
             }
         }
     }
-						Write-Host "Requirements met." -ForegroundColor Green
-						Write-Host " "
-						Write-Host "Type 'Start-Redkite' when ready." -ForegroundColor Yellow
+    
+    
+
+    Write-Host "All module requirements met." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Type 'Start-Redkite' when ready." -ForegroundColor Yellow
 }
+
 
 # Run this check before starting the main script
 Test-RequiredModules -Modules @('Microsoft.Graph.Users', 'ExchangeOnlineManagement')
+
+
 
 function Start-Redkite {
 
@@ -84,27 +114,48 @@ function Start-Redkite {
                                                                        
  
 "@ -ForegroundColor Red
-Start-Sleep -Seconds 4  # Pause for 2 seconds
+Start-Sleep -Seconds 2  # Pause for 2 seconds
+    
+    Write-Host " "
+    Write-Host "This tool is designed to check ExchangeOnline for common indicators of compromised accounts."
+    Write-Host "The checks focus on email phishing attacks; looking at commonly used inbox rules and external re-directs."
+    Write-Host " "
+    Write-Host "===== RedKite should be used as part of a full investigation =====" -ForegroundColor Yellow
+    Write-Host " "
+    Write-Host "The checks covered in this version include;"
+    Write-Host " -External redirects"
+    Write-Host " -Mailbox rules (Delete email, Move to folder and mark as read)"
+    Write-Host " -Recent mailbox changes (optional)"
+    Write-Host " "
+    Write-Host "Please choose from the following options and connect to MgGraph/ExchangeOnline with admin privileges when prompted" -ForegroundColor Yellow
+	 Write-Host " "
 	
-	Write-Host " "
-	Write-Host "This tool is designed to check ExchangeOnline for common indicators of compromised accounts."
-	Write-Host "The checks focus on email phishing attacks; looking at commonly used inbox rules and external re-directs."
-	Write-Host " "
-	Write-Host "===== RedKite should be used as part of a full investigation =====" -ForegroundColor Yellow
-	Write-Host " "
-	Write-Host "The checks covered in this version include;"
-	Write-Host " -External redirects"
-	Write-Host " -Mailbox rules (Delete email, Move to folder and mark as read)"
-	Write-Host " -Recent mailbox changes (optional)"
-	Write-Host " "
-	Write-Host "Please choose from the following options and then connect to MgGraph/ExchangeOnline with admin privileges when prompted" -ForegroundColor Yellow
+	
+    # connect to Exchange Online
+    Write-Host "[1/4] Connect to exchange online" -ForegroundColor Cyan
+    try {
+        # Optional: enforce minimum version
+        # $requiredVersion = [Version]"3.3.0"
+        # $exoModule = Get-Module -ListAvailable -Name ExchangeOnlineManagement | Where-Object { $_.Version -ge $requiredVersion }
+        # if (-not $exoModule) {
+        #     throw "ExchangeOnlineManagement $requiredVersion or newer is required."
+        # }
 
-    # Select users or all users
+        Connect-ExchangeOnline -ShowProgress:$false -ErrorAction Stop
+        Write-Host "Connected to Exchange Online." -ForegroundColor Green
+    }
+    catch {
+        Write-Error "Failed to connect to Exchange Online: $($_.Exception.Message)"
+        return
+    }
+
+    #  Prompt for user selection
     $choice = Read-Host "Would you like to check (A)ll users or (S)pecific users? [A/S]"
     $users = @()
+
     if ($choice -match '^[Ss]') {
         do {
-            $user = Read-Host "Enter user principal name (email) or press Enter to finish"
+            $user = Read-Host "Enter mailbox to check or press Enter to finish"
             if ($user) {
                 $users += $user
             }
@@ -112,8 +163,12 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
     }
     else {
         Write-Host "Option 'Check all users from Azure AD' selected" -ForegroundColor Cyan
+
+        # Connect to Graph only if needed
+        Write-Host "[2/4] Connecting to Microsoft Graph..." -ForegroundColor Cyan
         try {
-            Connect-Graph -NoWelcome
+            Connect-Graph -Scopes "User.Read.All" -NoWelcome
+            Write-Host "Connected to Microsoft Graph." -ForegroundColor Green
             $users = Get-MgUser -All -Property UserPrincipalName | Select-Object -ExpandProperty UserPrincipalName
         }
         catch {
@@ -138,9 +193,9 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
         }
     }
 
+    # Set up logging
     $logFile = Join-Path -Path $logFolder -ChildPath "Redkite_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
     Write-Host "Logs will be saved to $logFile" -ForegroundColor Cyan
-
     # Prompt for lookback days
     $lookbackDaysInput = Read-Host "Enter how many days back to check (default is 90)"
     if (-not [int]::TryParse($lookbackDaysInput, [ref]$null) -or [int]$lookbackDaysInput -le 0) {
@@ -160,109 +215,196 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
 
         $results = @()
 
-        try {
-            Write-Host "[1/3] Connecting to Exchange Online..." -ForegroundColor Cyan
-            Connect-ExchangeOnline -ShowProgress $false -ErrorAction Stop
-			 # Retrieve accepted domains
-        Write-Host "Retrieving accepted domains from Exchange Online..." -ForegroundColor Cyan
-        try {
-            $acceptedDomains = Get-AcceptedDomain | Select-Object -ExpandProperty DomainName
-            Write-Host "Detected accepted domains: $($acceptedDomains -join ', ')" -ForegroundColor Green
-        }
-        catch {
-            Write-Warning "Unable to retrieve accepted domains from Exchange Online. Please check your permissions."
-            $acceptedDomains = @()
-        }
-			
-        }
-        catch {
-            $errorMsg = "Error connecting to Exchange Online: $($_.Exception.Message)"
-            Write-Log $errorMsg $LogFile "ERROR"
-            $results += [PSCustomObject]@{
-                Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                Level     = "ERROR"
-                Check     = "Exchange Online Connection"
-                Detail    = $errorMsg
-                Status    = "ERROR"
-            }
-            return $results
-        }
+try {
+    # Retrieve accepted domains
+    Write-Host "Retrieving accepted domains from Exchange Online..." -ForegroundColor Cyan
+    try {
+        $acceptedDomains = Get-AcceptedDomain | Select-Object -ExpandProperty DomainName
+        Write-Host "Detected accepted domains: $($acceptedDomains -join ', ')" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Unable to retrieve accepted domains from Exchange Online. Please check your permissions."
+        $acceptedDomains = @()
+    }
+}
+catch {
+    $errorMsg = "Error connecting to Exchange Online: $($_.Exception.Message)"
+    Write-Log $errorMsg $LogFile "ERROR"
+    $results += [PSCustomObject]@{
+        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        Level     = "ERROR"
+        Check     = "Exchange Online Connection"
+        Detail    = $errorMsg
+        Status    = "ERROR"
+    }
+    return $results
+}
+# Inbox Rules Check
+Write-Host "[2/4] Checking inbox rules (Exchange Online)..." -ForegroundColor Cyan
+try {
+    $totalUsers = $usersChecked.Count
+    for ($i = 0; $i -lt $totalUsers; $i++) {
+        $user = $usersChecked[$i]
 
-        # Inbox Rules Check
-        Write-Host "[2/3] Checking inbox rules (Exchange Online)..." -ForegroundColor Cyan
+        # Update progress bar
+        $percentComplete = [int](($i / $totalUsers) * 100)
+        Write-Progress -Activity "Checking inbox rules" -Status "Processing user $($user) ($($i+1)/$totalUsers)" -PercentComplete $percentComplete
+
         try {
-			$totalUsers = $usersChecked.Count
-        for ($i = 0; $i -lt $totalUsers; $i++) {
-            $user = $usersChecked[$i]
-			
-			 # Update progress bar
-            $percentComplete = [int](($i / $totalUsers) * 100)
-            Write-Progress -Activity "Checking inbox rules" -Status "Processing user $($user) ($($i+1)/$totalUsers)" -PercentComplete $percentComplete
-			
-         
-                try {
-                    $rules = Get-InboxRule -Mailbox $user -ErrorAction Stop
-                    foreach ($rule in $rules) {
-                        # Check for suspicious actions
-                        if (
-                            ($rule.DeleteMessage) -or
-                            ($rule.MarkAsRead) -or
-                            ($rule.MoveToFolder -and $rule.MarkAsRead)
-                        ) {
+            $rules = Get-InboxRule -Mailbox $user -ErrorAction Stop
+            foreach ($rule in $rules) {
+                # Check for suspicious actions
+                if (
+                    ($rule.DeleteMessage) -or
+                    ($rule.MarkAsRead) -or
+                    ($rule.MoveToFolder -and $rule.MarkAsRead)
+                ) {
+                    $entry = [PSCustomObject]@{
+                        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                        Level     = "ALERT"
+                        Check     = "Inbox Rules"
+                        Detail    = "User: $user - Rule: $($rule.Name) - Action: " +
+                                    "$(if ($rule.DeleteMessage) {'DeleteMessage '})" +
+                                    "$(if ($rule.MarkAsRead) {'MarkAsRead '})" +
+                                    "$(if ($rule.MoveToFolder) {'MoveToFolder: ' + $rule.MoveToFolder.FolderPath})"
+                        Status    = "Suspicious mailbox rules - Investigation advised"
+                    }
+                    $results += $entry
+                    Write-Log $entry.Detail $LogFile "ALERT"
+                }
+
+                # Check for external forwarding in inbox rules
+                if ($rule.ForwardTo -and $rule.ForwardTo.Count -gt 0) {
+                    foreach ($recipient in $rule.ForwardTo) {
+                        $recipientAddress = $recipient.ToString()
+                        $recipientDomain = ($recipientAddress -split "@")[-1].ToLower()
+
+                        if (-not ($acceptedDomains -contains $recipientDomain)) {
                             $entry = [PSCustomObject]@{
                                 Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
                                 Level     = "ALERT"
                                 Check     = "Inbox Rules"
-                                Detail    = "User: $user - Rule: $($rule.Name) - Action: " +
-                                            "$(if ($rule.DeleteMessage) {'DeleteMessage '})" +
-                                            "$(if ($rule.MarkAsRead) {'MarkAsRead '})" +
-                                            "$(if ($rule.MoveToFolder) {'MoveToFolder: ' + $rule.MoveToFolder.FolderPath})"
-                                Status    = "Suspicious - Investigate"
+                                Detail    = "User: $user - Rule: $($rule.Name) - Action: Forward to external address: $recipientAddress"
+                                Status    = "External forward in place"
                             }
                             $results += $entry
                             Write-Log $entry.Detail $LogFile "ALERT"
                         }
-
-                       # Check for external forwarding
-                    if ($rule.ForwardTo -and $rule.ForwardTo.Count -gt 0) {
-                        foreach ($recipient in $rule.ForwardTo) {
-                            $recipientAddress = $recipient.ToString()
-                            $recipientDomain = ($recipientAddress -split "@")[-1].ToLower()
-
-                            if (-not ($acceptedDomains -contains $recipientDomain)) {
-                                $entry = [PSCustomObject]@{
-                                    Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                                    Level     = "ALERT"
-                                    Check     = "Inbox Rules"
-                                    Detail    = "User: $user - Rule: $($rule.Name) - Action: Forward to external address: $recipientAddress"
-                                    Status    = "Suspicious - Investigation required"
-                                }
-                                $results += $entry
-                                Write-Log $entry.Detail $LogFile "ALERT"
-                            }
-                        }
                     }
                 }
             }
-                catch {
-                    if ($_.Exception.Message -match "couldn't be found|RecipientNotFound|doesn't exist|does not exist|cannot be found") {
-                        $errorMsg = "Mailbox does not exist for user ${user}. Skipping..."
-                        Write-Log $errorMsg $LogFile "WARN"
-                    }
-                    else {
-                        $errorMsg = "Error checking inbox rules for ${user}: $($_.Exception.Message)"
-                        Write-Log $errorMsg $LogFile "ERROR"
-                        $results += [PSCustomObject]@{
-                            Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                            Level     = "ERROR"
-                            Check     = "Inbox Rules"
-                            Detail    = $errorMsg
-                            Status    = "ERROR"
-                        }
-                    }
+        }
+        catch {
+            $errorMessage = $_.Exception.Message
+
+            if ($errorMessage -match "(?i)couldn't be found|RecipientNotFound|doesn't exist|does not exist|cannot be found") {
+                if ($errorMessage -match "(?i)\balias\b|\bis an alias\b|\balternate address\b|\bmail-enabled contact\b|\bforwarding\b") {
+                    $errorMsg = "Mailbox is an alias or forwarding address for user ${user}. Skipping..."
+                }
+                else {
+                    $errorMsg = "Mailbox is an alias or does not exist for user ${user}. Skipping..."
+                }
+                Write-Log $errorMsg $LogFile "WARN"
+            }
+            else {
+                $errorMsg = "Error checking inbox rules for ${user}: $($_.Exception.Message)"
+                Write-Log $errorMsg $LogFile "ERROR"
+                $results += [PSCustomObject]@{
+                    Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                    Level     = "ERROR"
+                    Check     = "Inbox Rules"
+                    Detail    = $errorMsg
+                    Status    = "ERROR"
                 }
             }
-			 # Clear progress bar
+        }
+    }
+    # Clear inbox rules progress bar
+    Write-Progress -Activity "Checking inbox rules" -Completed
+}
+catch {
+    $errorMsg = "Error during inbox rules check: $($_.Exception.Message)"
+    Write-Log $errorMsg $LogFile "ERROR"
+    $results += [PSCustomObject]@{
+        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        Level     = "ERROR"
+        Check     = "Inbox Rules"
+        Detail    = $errorMsg
+        Status    = "ERROR"
+    }
+}
+
+# --- Now, check Shared Mailboxes separately, AFTER processing all user inbox rules ---
+Write-Host "[3/4] Checking shared mailboxes for suspicious settings, please wait..." -ForegroundColor Cyan
+try {
+    $allSharedMailboxes = Get-Mailbox -RecipientTypeDetails SharedMailbox -ResultSize Unlimited
+$sharedMailboxes = $allSharedMailboxes | Where-Object { $users -contains $_.UserPrincipalName }
+
+    $totalShared = $sharedMailboxes.Count
+
+    for ($k = 0; $k -lt $totalShared; $k++) {
+        $sharedMbx = $sharedMailboxes[$k]
+
+        # Update progress bar
+        $percentComplete = [int](($k / $totalShared) * 100)
+        Write-Progress -Activity "Checking shared mailboxes..." -Status "Processing shared mailbox $($sharedMbx.UserPrincipalName) ($($k+1)/$totalShared)" -PercentComplete $percentComplete
+
+        try {
+            # Check mailbox forwarding settings
+            $mbxDetails = Get-Mailbox -Identity $sharedMbx.UserPrincipalName -ErrorAction Stop
+            if ($mbxDetails.ForwardingSMTPAddress) {
+                $forwardAddress = $mbxDetails.ForwardingSMTPAddress.ToString()
+                $forwardDomain = ($forwardAddress -split "@")[-1].ToLower()
+                if (-not ($acceptedDomains -contains $forwardDomain)) {
+                    $entry = [PSCustomObject]@{
+                        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                        Level     = "ALERT"
+                        Check     = "Shared Mailboxes"
+                        Detail    = "Shared mailbox: $($sharedMbx.UserPrincipalName) forwards mail externally to $forwardAddress"
+                        Status    = "External forwarding on shared mailbox"
+                    }
+                    $results += $entry
+                    Write-Log $entry.Detail $LogFile "ALERT"
+                }
+            }
+
+            # Check inbox rules on shared mailboxes:
+            $rules = Get-InboxRule -Mailbox $sharedMbx.UserPrincipalName -ErrorAction SilentlyContinue
+            foreach ($rule in $rules) {
+                if (
+                    ($rule.DeleteMessage) -or
+                    ($rule.MarkAsRead) -or
+                    ($rule.MoveToFolder -and $rule.MarkAsRead)
+                ) {
+                    $entry = [PSCustomObject]@{
+                        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                        Level     = "ALERT"
+                        Check     = "Shared Mailboxes - Inbox Rules"
+                        Detail    = "Shared mailbox: $($sharedMbx.UserPrincipalName) - Rule: $($rule.Name) - Action: " +
+                                    "$(if ($rule.DeleteMessage) {'DeleteMessage '})" +
+                                    "$(if ($rule.MarkAsRead) {'MarkAsRead '})" +
+                                    "$(if ($rule.MoveToFolder) {'MoveToFolder: ' + $rule.MoveToFolder.FolderPath})"
+                        Status    = "Suspicious mailbox rules on shared mailbox"
+                    }
+                    $results += $entry
+                    Write-Log $entry.Detail $LogFile "ALERT"
+                }
+            }
+        }
+        catch {
+            $errorMsg = "Error checking shared mailbox $($sharedMbx.UserPrincipalName): $($_.Exception.Message)"
+            Write-Log $errorMsg $LogFile "ERROR"
+            $results += [PSCustomObject]@{
+                Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                Level     = "ERROR"
+                Check     = "Shared Mailboxes"
+                Detail    = $errorMsg
+                Status    = "ERROR"
+            }
+        }
+    }
+
+             # Clear progress bar
         Write-Progress -Activity "Checking inbox rules" -Completed
         }
         catch {
@@ -279,25 +421,34 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
 
  # Prompt user to continue
     Write-Host
-    $continue = Read-Host "Do you want to continue with checking for recent mailbox changes? (Y/N)"
+    $continue = Read-Host "Do you want to continue with checking for recent 'UpdateInboxRules'/'Set-Mailbox' changes? (Y/N)"
     if ($continue -ne "Y" -and $continue -ne "y") {
         Write-Host "Skipping recent mailbox changes. Outputting inbox rules results only." -ForegroundColor Yellow
         return $results
     }
 
-        # Recent Mailbox Changes 
+        # Recent Mailbox Changes
         try {
-            Write-Host "[3/3] Checking recent mailbox changes (Exchange Online)..." -ForegroundColor Cyan
-            $mailboxes = Get-Mailbox -ResultSize Unlimited
+            Write-Host "[4/4] Checking recent mailbox changes (Exchange Online)..." -ForegroundColor Cyan
+           $mailboxes = @()
+foreach ($user in $users) {
+    try {
+        $mailbox = Get-Mailbox -Identity $user -ErrorAction Stop
+        $mailboxes += $mailbox
+    }
+    catch {
+       Write-Log "Could not retrieve mailbox for ${user}: $($_.Exception.Message)" $LogFile "WARN"
+    }
+}
             
-			 $totalMailboxes = $mailboxes.Count
+             $totalMailboxes = $mailboxes.Count
         for ($j = 0; $j -lt $totalMailboxes; $j++) {
             $mbx = $mailboxes[$j]
 
             # Update progress bar
             $percentComplete = [int](($j / $totalMailboxes) * 100)
             Write-Progress -Activity "Checking recent mailbox changes" -Status "Processing mailbox $($mbx.UserPrincipalName) ($($j+1)/$totalMailboxes)" -PercentComplete $percentComplete
-			
+            
                 try {
                     $auditLogs = Search-MailboxAuditLog -Identity $mbx.UserPrincipalName `
                         -LogonTypes Owner,Delegate,Admin -ShowDetails `
@@ -317,11 +468,15 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
                     }
                 }
                 catch {
-                    if ($_.Exception.Message -like "*couldn't be found*" -or $_.Exception.Message -like "*RecipientNotFound*") {
-                        $errorMsg = "Mailbox does not exist for user $($mbx.UserPrincipalName). Skipping..."
-                        Write-Log $errorMsg $LogFile "WARN"
-                    }
-                    else {
+    if ($errorMessage -match "(?i)couldn't be found|RecipientNotFound|doesn't exist|does not exist|cannot be found") {
+        if ($errorMessage -match "(?i)\balias\b|\bis an alias\b|\balternate address\b|\bmail-enabled contact\b|\bforwarding\b") {
+            $errorMsg = "Mailbox is an alias or forwarding address for user ${user}. Skipping..."
+        }
+        else {
+            $errorMsg = "Mailbox is an alias or does not exist for user ${user}. Skipping..."
+        }
+        Write-Log $errorMsg $LogFile "WARN"
+    }
                         $errorMsg = "Error retrieving mailbox changes for user $($mbx.UserPrincipalName): $($_.Exception.Message)"
                         Write-Log $errorMsg $LogFile "ERROR"
                         $results += [PSCustomObject]@{
@@ -333,8 +488,8 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
                         }
                     }
                 }
-            }
-			# Clear progress bar
+            
+            # Clear progress bar
         Write-Progress -Activity "Checking recent mailbox changes" -Completed
         }
         catch {
@@ -347,25 +502,23 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
             }
         }
 
-        # Summary entries for users with no alerts
-        foreach ($user in $usersChecked) {
-            if (-not ($results | Where-Object { $_.Detail -like "*$user*" -and $_.Status -eq "ALERT" })) {
-                $entry = [PSCustomObject]@{
-                    Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                    Level     = "INFO"
-                    Check     = "Summary"
-                    Detail    = "No suspicious activity found for user $user."
-                    Status    = "OK"
-                }
-                $results += $entry
-                Write-Log $entry.Detail $LogFile "INFO"
-            }
-        }
-		
-		 
-
-        return $results
+        # Summary entry if no alerts are found at all across any mailboxes
+if (-not ($results | Where-Object { $_.Status -eq "ALERT" })) {
+    $entry = [PSCustomObject]@{
+        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        Level     = "INFO"
+        Check     = "Summary"
+        Detail    = "RedKite checks complete."
+        Status    = "OK"
     }
+    $results += $entry
+    Write-Log $entry.Detail $LogFile "INFO"
+}
+
+return $results
+    }
+
+
 
     # Run main checks
     $results = Get-M365PhishIndicators -usersChecked $users -LogFile $logFile -LookbackDays $lookbackDays
@@ -398,7 +551,7 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
             Write-Error "Failed to export CSV: $($_.Exception.Message)"
         }
     }
-	 # Prompt to disconnect
+     # Prompt to disconnect
     Write-Host
     $disconnect = Read-Host "Do you want to disconnect from Exchange Online and Microsoft Graph? (Y/N)"
     if ($disconnect -eq "Y" -or $disconnect -eq "y") {
@@ -413,9 +566,9 @@ Start-Sleep -Seconds 4  # Pause for 2 seconds
             Write-Warning "Error disconnecting: $($_.Exception.Message)"
         }
     }
-}
-
-Export-ModuleMember -Function Write-Log, Test-RequiredModules, Start-Redkite, Get-M365PhishIndicators
+ }
+ 
+Export-ModuleMember -Function Write-Log, Test-RequiredModules, Start-Redkite, Clear-GraphTokenCache, Get-M365PhishIndicators
 
 
 
